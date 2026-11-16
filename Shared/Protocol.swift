@@ -30,7 +30,10 @@ public enum Message: Codable {
     case hello(pairing: Bool, deviceName: String)
     /// Réponse : identifiant + clé secrète (hex) à réutiliser pour les connexions suivantes.
     case welcome(tokenId: String, key: String, hostName: String)
+    /// Erreur à afficher (arrête aussi le retour d'écran côté iPhone).
     case notice(String)
+    /// Information non bloquante.
+    case info(String)
     case mouseMove(dx: Double, dy: Double)
     /// Position absolue normalisée (0…1) sur l'écran principal.
     case mouseAbs(x: Double, y: Double)
@@ -43,8 +46,16 @@ public enum Message: Codable {
     case text(String)
     /// Raccourci : caractères résolus via la disposition clavier du Mac, avec modificateurs.
     case chord(text: String, flags: UInt64)
-    case screenStart(maxWidth: Int, fps: Int)
+    case screenStart(maxWidth: Int, fps: Int, quality: Double)
     case screenStop
+    /// Presse-papiers (texte) : iPhone → Mac, demande Mac → iPhone, et réponse.
+    case clipboardSet(String)
+    case clipboardGet
+    case clipboard(String)
+    /// Envoi d'un fichier iPhone → Mac (dossier Téléchargements/MacRemote).
+    case fileStart(name: String, size: Int)
+    case fileChunk(Data)
+    case fileEnd
     /// Image JPEG de l'écran du Mac.
     case frame(jpeg: Data, width: Int, height: Int)
 }
@@ -80,3 +91,5 @@ public struct Framer {
 }
 
 public let serviceType = "_macremote._tcp"
+/// Port TCP fixe (connexion directe par adresse IP, ex. via Tailscale).
+public let defaultPort: UInt16 = 52525

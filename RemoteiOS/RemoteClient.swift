@@ -2,6 +2,18 @@ import Foundation
 import Network
 import UIKit
 
+enum ScreenQuality: String, CaseIterable {
+    case eco = "Économie", normal = "Normal", high = "Haute"
+    /// (largeur max, images/s, qualité JPEG)
+    var params: (Int, Int, Double) {
+        switch self {
+        case .eco: return (960, 10, 0.4)
+        case .normal: return (1280, 20, 0.5)
+        case .high: return (1920, 30, 0.7)
+        }
+    }
+}
+
 final class RemoteClient: ObservableObject {
     struct Host: Identifiable, Hashable {
         let name: String
@@ -19,6 +31,8 @@ final class RemoteClient: ObservableObject {
     @Published var state: State = .idle
     @Published var screenImage: UIImage?
     @Published var notice: String?
+    @Published var banner: String?
+    @Published var transfer: Double?
 
     private var browser: NWBrowser?
     private var connection: NWConnection?
@@ -29,6 +43,16 @@ final class RemoteClient: ObservableObject {
 
     private var pendingDX = 0.0, pendingDY = 0.0
     private var moveScheduled = false
+
+    /// Hôte saisi à la main : « adresse » ou « adresse:port » (ex. IP Tailscale).
+    static func manualHost(_ text: String) -> Host? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        let parts = t.split(separator: ":", maxSplits: 1).map(String.init)
+        let port = parts.count == 2 ? UInt16(parts[1]) : defaultPort
+        guard let port, let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
+        return Host(name: t, endpoint: .hostPort(host: NWEndpoint.Host(parts[0]), port: nwPort))
+    }
 
     // MARK: Découverte
 
@@ -132,6 +156,11 @@ final class RemoteClient: ObservableObject {
         case let .notice(text):
             notice = text
             wantsScreen = false
+        case let .info(text):
+            showBanner(text)
+        case let .clipboard(text):
+            UIPasteboard.general.string = text
+            showBanner(text.isEmpty ? "Presse-papiers du Mac vide" : "Presse-papiers du Mac copié")
         case let .frame(jpeg, _, _):
             DispatchQueue.global(qos: .userInteractive).async { [weak self] in
                 guard let img = UIImage(data: jpeg)?.preparingForDisplay() else { return }
@@ -161,9 +190,55 @@ final class RemoteClient: ObservableObject {
         }
     }
 
-    func setScreen(_ on: Bool) {
+    func showBanner(_ text: String) {
+        banner = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in if self?.banner == text { self?.banner = nil } }
+    }
+
+    func setScreen(_ on: Bool, quality: ScreenQuality = .normal) {
         wantsScreen = on
-        if on { send(.screenStart(maxWidth: 1280, fps: 20)) }
+        let p = quality.params
+        if on { send(.screenStart(maxWidth: p.0, fps: p.1, quality: p.2)) }
         else { send(.screenStop); screenImage = nil }
+    }
+
+    // MARK: Presse-papiers et fichiers
+
+    func sendClipboard() {
+        guard let t = UIPasteboard.general.string, !t.isEmpty else { showBanner("Presse-papiers de l'iPhone vide"); return }
+        send(.clipboardSet(t))
+    }
+
+    func requestClipboard() { send(.clipboardGet) }
+
+    /// Envoi par morceaux, chacun attendant la fin du précédent (pas de saturation mémoire).
+    func sendFile(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let self, let fh = try? FileHandle(forReadingFrom: url) else { return }
+            defer { try? fh.close() }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            self.sendAndWait(.fileStart(name: url.lastPathComponent, size: size))
+            var sent = 0
+            while let chunk = try? fh.read(upToCount: 256 * 1024), !chunk.isEmpty {
+                self.sendAndWait(.fileChunk(chunk))
+                sent += chunk.count
+                let p = Double(sent) / Double(max(size, 1))
+                DispatchQueue.main.async { self.transfer = p }
+            }
+            self.sendAndWait(.fileEnd)
+            DispatchQueue.main.async { self.transfer = nil }
+        }
+    }
+
+    private func sendAndWait(_ m: Message) {
+        guard let data = Framer.encode(m) else { return }
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            guard let c = self.connection else { sem.signal(); return }
+            c.send(content: data, completion: .contentProcessed { _ in sem.signal() })
+        }
+        sem.wait()
     }
 }

@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let devices = server.connectedDevices
         menu.addItem(withTitle: devices.isEmpty ? "Aucun iPhone connecté" : "Connecté : " + devices.joined(separator: ", "),
                      action: nil, keyEquivalent: "")
+        let addrs = ipv4Addresses()
+        if !addrs.isEmpty {
+            menu.addItem(withTitle: "Adresses (port \(defaultPort)) : " + addrs.joined(separator: ", "), action: nil, keyEquivalent: "")
+        }
         if !AXIsProcessTrusted() {
             menu.addItem(.separator())
             let item = NSMenuItem(title: "⚠️ Autoriser l'Accessibilité…", action: #selector(openAccessibility), keyEquivalent: "")
@@ -47,4 +51,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openAccessibility() { requestAccessibility(prompt: true) }
     @objc private func newCode() { server.regenerateCode() }
     @objc private func forgetAll() { server.forgetAllDevices() }
+
+    /// Adresses IPv4 locales (Wi-Fi, Ethernet, Tailscale…) pour la connexion directe.
+    private func ipv4Addresses() -> [String] {
+        var out: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let i = ptr.pointee
+            guard let sa = i.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET),
+                  (i.ifa_flags & UInt32(IFF_LOOPBACK)) == 0, (i.ifa_flags & UInt32(IFF_UP)) != 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                let a = String(cString: host)
+                if !a.hasPrefix("169.254") { out.append(a) }
+            }
+        }
+        return out
+    }
 }

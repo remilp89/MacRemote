@@ -49,6 +49,8 @@ enum Auth {
         }
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
-        return NWParameters(tls: tls, tcp: tcp)
+        let params = NWParameters(tls: tls, tcp: tcp)
+        params.allowLocalEndpointReuse = true
+        return params
     }
 }

@@ -1,9 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var client: RemoteClient
     @State private var pinHost: RemoteClient.Host?
     @State private var pin = ""
+    @State private var manualText = ""
+    @AppStorage("manualHosts") private var manualJoined = ""
 
     var body: some View {
         Group {
@@ -26,6 +29,19 @@ struct ContentView: View {
         }
     }
 
+    private var manualList: [String] { manualJoined.split(separator: "\n").map(String.init) }
+
+    private func addManual() {
+        let t = manualText.trimmingCharacters(in: .whitespaces)
+        guard RemoteClient.manualHost(t) != nil else { return }
+        if !manualList.contains(t) { manualJoined = (manualList + [t]).joined(separator: "\n") }
+        manualText = ""
+    }
+
+    private func open(_ h: RemoteClient.Host) {
+        if client.hasToken(for: h) { client.connect(to: h, code: nil) } else { pinHost = h }
+    }
+
     private var hostList: some View {
         NavigationStack {
             List {
@@ -34,10 +50,7 @@ struct ContentView: View {
                         HStack { ProgressView(); Text("Recherche en cours…").foregroundColor(.secondary) }
                     }
                     ForEach(client.hosts) { h in
-                        Button {
-                            if client.hasToken(for: h) { client.connect(to: h, code: nil) }
-                            else { pinHost = h }
-                        } label: {
+                        Button { open(h) } label: {
                             HStack {
                                 Image(systemName: "desktopcomputer")
                                 Text(h.name)
@@ -45,6 +58,21 @@ struct ContentView: View {
                                 if client.state == .connecting { ProgressView() }
                             }
                         }
+                    }
+                }
+                Section("Connexion directe (IP, Tailscale…)") {
+                    HStack {
+                        TextField("ex. 100.64.0.5 ou 192.168.1.20", text: $manualText)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        Button("Ajouter") { addManual() }.disabled(RemoteClient.manualHost(manualText) == nil)
+                    }
+                    ForEach(manualList, id: \.self) { addr in
+                        if let h = RemoteClient.manualHost(addr) {
+                            Button { open(h) } label: { HStack { Image(systemName: "network"); Text(addr); Spacer() } }
+                        }
+                    }
+                    .onDelete { idx in
+                        var l = manualList; l.remove(atOffsets: idx); manualJoined = l.joined(separator: "\n")
                     }
                 }
                 if case .failed(let msg) = client.state {
@@ -67,6 +95,10 @@ struct ControlView: View {
     @State private var sensitivity = 1.0
     @State private var screenOn = false
     @State private var direct = true
+    @State private var importing = false
+    @AppStorage("screenQuality") private var qualityRaw = ScreenQuality.normal.rawValue
+
+    private var quality: ScreenQuality { ScreenQuality(rawValue: qualityRaw) ?? .normal }
 
     private var flags: UInt64 {
         (shift ? ModFlag.shift : 0) | (ctrl ? ModFlag.control : 0) | (opt ? ModFlag.option : 0) | (cmd ? ModFlag.command : 0)
@@ -78,12 +110,21 @@ struct ControlView: View {
             HStack {
                 Label(hostName, systemImage: "desktopcomputer").font(.headline)
                 Spacer()
-                Button { screenOn.toggle(); client.setScreen(screenOn) } label: { Image(systemName: screenOn ? "display" : "display.trianglebadge.exclamationmark") }
+                Button { screenOn.toggle(); client.setScreen(screenOn, quality: quality) } label: { Image(systemName: screenOn ? "display" : "display.trianglebadge.exclamationmark") }
                     .font(.title2)
                 if screenOn {
                     Button { direct.toggle() } label: { Image(systemName: direct ? "hand.point.up.left.fill" : "hand.point.up.left") }
                         .font(.title2)
                 }
+                Menu {
+                    Picker("Qualité de l'écran", selection: $qualityRaw) {
+                        ForEach(ScreenQuality.allCases, id: \.rawValue) { Text($0.rawValue).tag($0.rawValue) }
+                    }
+                    Button { client.sendClipboard() } label: { Label("Envoyer mon presse-papiers au Mac", systemImage: "doc.on.clipboard") }
+                    Button { client.requestClipboard() } label: { Label("Récupérer le presse-papiers du Mac", systemImage: "arrow.down.doc") }
+                    Button { importing = true } label: { Label("Envoyer un fichier au Mac…", systemImage: "square.and.arrow.up") }
+                } label: { Image(systemName: "ellipsis.circle") }
+                    .font(.title2)
                 Button { keyboard.toggle() } label: { Image(systemName: keyboard ? "keyboard.chevron.compact.down" : "keyboard") }
                     .font(.title2)
                 Button("Quitter", role: .destructive) { client.disconnect() }
@@ -102,6 +143,15 @@ struct ControlView: View {
                             onChord: { t, f in client.send(.chord(text: t, flags: f)) })
                 .frame(width: 1, height: 1)
         )
+        .onChange(of: qualityRaw) { _ in if screenOn { client.setScreen(true, quality: quality) } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { client.sendFile(url) }
+        }
+        .overlay(alignment: .top) {
+            if let b = client.transfer.map({ "Envoi du fichier… \(Int($0 * 100)) %" }) ?? client.banner {
+                Text(b).font(.footnote).padding(8).background(.ultraThinMaterial, in: Capsule()).padding(.top, 4)
+            }
+        }
         .alert("MacRemote", isPresented: Binding(get: { client.notice != nil }, set: { if !$0 { client.notice = nil; screenOn = false } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(client.notice ?? "") }

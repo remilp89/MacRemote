@@ -14,13 +14,23 @@ final class ScreenCapturer: NSObject, SCStreamOutput {
     var onFrame: ((Data, Int, Int) -> Void)?
     var onError: ((String) -> Void)?
 
+    private var quality = 0.5
+    private var current: (Int, Int, Double)?
+
     var isRunning: Bool { stream != nil || starting }
 
-    func start(maxWidth: Int, fps: Int) {
-        guard !isRunning else { return }
+    /// Démarre, ou redémarre si les réglages ont changé.
+    func start(maxWidth: Int, fps: Int, quality: Double) {
+        let params = (maxWidth, fps, quality)
+        if isRunning, let c = current, c == params { return }
+        current = params
+        self.quality = quality
+        let old = stream
+        stream = nil
         starting = true
         Task {
             do {
+                try? await old?.stopCapture()
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 let id = CGMainDisplayID()
                 guard let display = content.displays.first(where: { $0.displayID == id }) ?? content.displays.first else {
@@ -49,6 +59,7 @@ final class ScreenCapturer: NSObject, SCStreamOutput {
     func stop() {
         let s = stream
         stream = nil
+        current = nil
         starting = false
         Task { try? await s?.stopCapture() }
     }
@@ -58,7 +69,7 @@ final class ScreenCapturer: NSObject, SCStreamOutput {
         let image = CIImage(cvPixelBuffer: pb)
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
               let jpeg = ciContext.jpegRepresentation(of: image, colorSpace: space,
-                  options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.5]) else { return }
+                  options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]) else { return }
         onFrame?(jpeg, CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb))
     }
 }

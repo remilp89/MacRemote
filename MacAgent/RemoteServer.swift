@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CoreGraphics
+import AppKit
 
 /// Une connexion iPhone.
 final class Session {
@@ -10,6 +11,10 @@ final class Session {
     var deviceName = "iPhone"
     var wantsScreen = false
     var framesInFlight = 0
+    var file: FileHandle?
+    var filePath: URL?
+    var fileExpected = 0
+    var fileReceived = 0
     init(_ c: NWConnection) { connection = c }
 
     func send(_ m: Message, completion: (() -> Void)? = nil) {
@@ -52,7 +57,11 @@ final class RemoteServer {
         var psks: [(identity: String, key: Data)] = [(Auth.pairIdentity, Auth.pairKey(code: code))]
         for (id, hex) in tokens { if let k = Auth.fromHex(hex) { psks.append(("t:" + id, k)) } }
         do {
-            let l = try NWListener(using: Auth.parameters(psks: psks))
+            let params = Auth.parameters(psks: psks)
+            // Port fixe pour la connexion directe par IP ; port libre en secours.
+            let l: NWListener
+            if let fixed = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: defaultPort)!) { l = fixed }
+            else { l = try NWListener(using: params) }
             l.service = NWListener.Service(name: hostName, type: serviceType)
             l.newConnectionHandler = { [weak self] c in self?.accept(c) }
             l.start(queue: .main)
@@ -86,8 +95,9 @@ final class RemoteServer {
     }
 
     private func drop(_ id: ObjectIdentifier) {
-        guard sessions[id] != nil else { return }
+        guard let gone = sessions[id] else { return }
         sessions[id] = nil
+        abortFile(gone)
         injector.releaseAll()
         updateCapture()
         onChange?()
@@ -131,24 +141,33 @@ final class RemoteServer {
         case let .key(code, down, flags): injector.key(code: code, down: down, flags: flags)
         case let .text(t): injector.type(t)
         case let .chord(t, flags): injector.chord(t, flags: flags)
-        case .screenStart:
+        case let .screenStart(w, fps, q):
             if !CGPreflightScreenCaptureAccess() {
                 CGRequestScreenCaptureAccess()
                 s.send(.notice("Autorise l'enregistrement d'écran pour MacRemote Agent (Réglages Système > Confidentialité), puis relance l'agent et réessaie."))
                 return
             }
             s.wantsScreen = true
-            updateCapture(params: m)
+            updateCapture(params: (w, fps, q))
         case .screenStop:
             s.wantsScreen = false
             updateCapture()
+        case let .clipboardSet(text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            s.send(.info("Presse-papiers envoyé au Mac"))
+        case .clipboardGet:
+            s.send(.clipboard(NSPasteboard.general.string(forType: .string) ?? ""))
+        case let .fileStart(name, size): beginFile(s, name: name, size: size)
+        case let .fileChunk(data): appendFile(s, data)
+        case .fileEnd: finishFile(s)
         default: break
         }
     }
 
     // MARK: Capture d'écran
 
-    private func updateCapture(params: Message? = nil) {
+    private func updateCapture(params: (Int, Int, Double)? = nil) {
         guard #available(macOS 12.3, *) else {
             sessions.values.filter { $0.wantsScreen }.forEach { $0.send(.notice("Retour d'écran : macOS 12.3 minimum requis.")); $0.wantsScreen = false }
             return
@@ -164,7 +183,7 @@ final class RemoteServer {
             return c
         }()
         if anyone {
-            if case let .screenStart(w, fps)? = params { cap.start(maxWidth: w, fps: fps) }
+            if let p = params { cap.start(maxWidth: p.0, fps: p.1, quality: p.2) }
         } else {
             cap.stop()
         }
@@ -177,5 +196,48 @@ final class RemoteServer {
                 DispatchQueue.main.async { s?.framesInFlight -= 1 }
             }
         }
+    }
+
+    // MARK: Réception de fichiers
+
+    private func beginFile(_ s: Session, name: String, size: Int) {
+        abortFile(s)
+        var safe = (name as NSString).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        while safe.hasPrefix(".") { safe.removeFirst() }
+        guard !safe.isEmpty, size >= 0, size <= 2_000_000_000 else { s.send(.notice("Fichier refusé")); return }
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent("MacRemote")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var url = dir.appendingPathComponent(safe)
+        var n = 1
+        let ext = url.pathExtension, base = url.deletingPathExtension().lastPathComponent
+        while FileManager.default.fileExists(atPath: url.path) {
+            n += 1
+            url = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+        }
+        guard FileManager.default.createFile(atPath: url.path, contents: nil), let h = try? FileHandle(forWritingTo: url) else {
+            s.send(.notice("Impossible de créer le fichier sur le Mac")); return
+        }
+        s.file = h; s.filePath = url; s.fileExpected = size; s.fileReceived = 0
+    }
+
+    private func appendFile(_ s: Session, _ data: Data) {
+        guard let h = s.file else { return }
+        s.fileReceived += data.count
+        if s.fileReceived > s.fileExpected { abortFile(s); s.send(.notice("Transfert interrompu (taille incorrecte)")); return }
+        try? h.write(contentsOf: data)
+    }
+
+    private func finishFile(_ s: Session) {
+        guard let h = s.file, let url = s.filePath else { return }
+        try? h.close()
+        s.file = nil; s.filePath = nil
+        s.send(.info("Fichier reçu : Téléchargements/MacRemote/\(url.lastPathComponent)"))
+    }
+
+    private func abortFile(_ s: Session) {
+        guard let h = s.file else { return }
+        try? h.close()
+        if let url = s.filePath { try? FileManager.default.removeItem(at: url) }
+        s.file = nil; s.filePath = nil
     }
 }
