@@ -9,11 +9,13 @@ Pilote la souris, le clavier et l'écran d'un Mac depuis un iPhone — réseau l
 - **Presse-papiers** partagé (texte) dans les deux sens.
 - **Envoi de fichiers** iPhone → Mac (dossier `Téléchargements/MacRemote`).
 - Détection automatique (Bonjour) ou **connexion directe par IP** (port 52525), par exemple via [Tailscale](https://tailscale.com) pour contrôler un Mac hors du réseau local.
+- **Widget** (écran d'accueil, écran verrouillé) et **bouton Centre de contrôle** (iOS 18) : un tap rouvre l'app et reconnecte le dernier Mac ; reconnexion automatique au lancement.
 - Connexion chiffrée (TLS 1.2 PSK) ; appairage par code, puis clé de 256 bits dans le Keychain de l'iPhone.
 
 ## Structure
 - `MacAgent/` : app de barre de menus pour le Mac piloté (macOS 12+, Intel et Apple Silicon).
-- `RemoteiOS/` : app iPhone (iOS 16+).
+- `RemoteiOS/` : app iPhone (iOS 17+) + extension widget.
+- `RemoteWidget/`, `RemoteShared/` : widget et données partagées (App Group).
 - `Shared/` : protocole et authentification.
 
 ## Compiler
@@ -23,7 +25,7 @@ Prérequis : Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew ins
 DEVELOPMENT_TEAM=XXXXXXXXXX xcodegen generate
 open MacRemote.xcodeproj
 ```
-Le Team ID n'est volontairement pas dans le dépôt. Les identifiants de bundle `com.macremote.*` peuvent être changés dans `project.yml`.
+Le Team ID n'est volontairement pas dans le dépôt. **Si tu forkes** : les identifiants de bundle et l'App Group sont uniques chez Apple, donc change `APP_GROUP` et les `PRODUCT_BUNDLE_IDENTIFIER` (préfixe `com.macremote.e239b564`) dans `project.yml`.
 Pour installer l'agent sur un autre Mac : build Release universel (`ARCHS="arm64 x86_64"`), signé Developer ID, puis copie de l'app.
 
 ## Utilisation

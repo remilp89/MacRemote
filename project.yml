@@ -2,10 +2,11 @@ name: MacRemote
 options:
   bundleIdPrefix: com.macremote
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
     macOS: "12.0"
 settings:
   base:
+    APP_GROUP: group.com.macremote.e239b564   # doit être unique chez Apple : change-le si tu forkes
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
@@ -33,16 +34,45 @@ targets:
   MacRemote:
     type: application
     platform: iOS
-    sources: [RemoteiOS, Shared]
+    sources: [RemoteiOS, Shared, RemoteShared]
+    dependencies:
+      - target: MacRemoteWidget
+    entitlements:
+      path: RemoteiOS/RemoteiOS.entitlements
+      properties:
+        com.apple.security.application-groups: [$(APP_GROUP)]
     info:
       path: RemoteiOS/Info.plist
       properties:
         CFBundleDisplayName: MacRemote
+        AppGroupID: $(APP_GROUP)
         UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: com.macremote.e239b564.app
+            CFBundleURLSchemes: [macremote]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSLocalNetworkUsageDescription: Se connecter au Mac à piloter sur votre réseau local.
         NSBonjourServices: [_macremote._tcp]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.macremote.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.macremote.e239b564.app
+        TARGETED_DEVICE_FAMILY: "1"
+  MacRemoteWidget:
+    type: app-extension
+    platform: iOS
+    sources: [RemoteWidget, RemoteShared]
+    entitlements:
+      path: RemoteWidget/RemoteWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [$(APP_GROUP)]
+    info:
+      path: RemoteWidget/Info.plist
+      properties:
+        CFBundleDisplayName: MacRemote
+        AppGroupID: $(APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macremote.e239b564.app.widget
         TARGETED_DEVICE_FAMILY: "1"

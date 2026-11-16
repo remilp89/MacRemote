@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import UIKit
+import WidgetKit
 
 enum ScreenQuality: String, CaseIterable {
     case eco = "Économie", normal = "Normal", high = "Haute"
@@ -18,6 +19,7 @@ final class RemoteClient: ObservableObject {
     struct Host: Identifiable, Hashable {
         let name: String
         let endpoint: NWEndpoint
+        var manual = false
         var id: String { name }
     }
     enum State: Equatable {
@@ -40,6 +42,11 @@ final class RemoteClient: ObservableObject {
     private var currentHost: Host?
     private var pairing = false
     private var wantsScreen = false
+    private var pending: SharedStore.Entry?
+    /// Vrai après un « Quitter » volontaire : pas de reconnexion automatique au retour dans l'app.
+    private var userDisconnected = false
+
+    var connectedHostName: String? { if case .connected = state { return currentHost?.name } else { return nil } }
 
     private var pendingDX = 0.0, pendingDY = 0.0
     private var moveScheduled = false
@@ -51,7 +58,7 @@ final class RemoteClient: ObservableObject {
         let parts = t.split(separator: ":", maxSplits: 1).map(String.init)
         let port = parts.count == 2 ? UInt16(parts[1]) : defaultPort
         guard let port, let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
-        return Host(name: t, endpoint: .hostPort(host: NWEndpoint.Host(parts[0]), port: nwPort))
+        return Host(name: t, endpoint: .hostPort(host: NWEndpoint.Host(parts[0]), port: nwPort), manual: true)
     }
 
     // MARK: Découverte
@@ -64,7 +71,7 @@ final class RemoteClient: ObservableObject {
                 if case let .service(name, _, _, _) = $0.endpoint { return Host(name: name, endpoint: $0.endpoint) }
                 return nil
             }
-            DispatchQueue.main.async { self?.hosts = found.sorted { $0.name < $1.name } }
+            DispatchQueue.main.async { self?.hosts = found.sorted { $0.name < $1.name }; self?.tryPending() }
         }
         b.start(queue: .main)
         browser = b
@@ -76,6 +83,7 @@ final class RemoteClient: ObservableObject {
 
     /// `code` = code d'appairage (première connexion) ; sinon on utilise la clé mémorisée.
     func connect(to host: Host, code: String?) {
+        userDisconnected = false
         disconnect()
         let psk: (identity: String, key: Data)
         if let code, !Auth.normalize(code).isEmpty {
@@ -128,6 +136,38 @@ final class RemoteClient: ObservableObject {
         state = .failed(msg)
     }
 
+    /// « Quitter » demandé par l'utilisateur.
+    func userDisconnect() { userDisconnected = true; pending = nil; disconnect() }
+
+    /// Ouverture depuis le widget / le Centre de contrôle : (re)connecte ce Mac.
+    func openFromWidget(_ e: SharedStore.Entry) {
+        userDisconnected = false
+        if connectedHostName == e.name { return }
+        if state == .connecting || connectedHostName != nil { disconnect() }
+        autoConnect(e)
+    }
+
+    /// Reconnexion automatique au dernier Mac (si la clé est déjà mémorisée).
+    func autoConnectLast() {
+        guard !userDisconnected, state == .idle || { if case .failed = state { return true } else { return false } }(),
+              let e = SharedStore.recent().first else { return }
+        autoConnect(e)
+    }
+
+    private func autoConnect(_ e: SharedStore.Entry) {
+        pending = e
+        tryPending()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in if self?.pending == e { self?.pending = nil } }
+    }
+
+    private func tryPending() {
+        guard let e = pending, state != .connecting, connectedHostName == nil else { return }
+        let host = e.manual ? Self.manualHost(e.name) : hosts.first { $0.name == e.name }
+        guard let host, hasToken(for: host) else { return }
+        pending = nil
+        connect(to: host, code: nil)
+    }
+
     func disconnect() {
         connection?.cancel()
         connection = nil
@@ -153,6 +193,10 @@ final class RemoteClient: ObservableObject {
         case let .welcome(tokenId, key, hostName):
             if !tokenId.isEmpty, let h = currentHost { Keychain.set("\(tokenId):\(key)", for: "token.\(h.name)") }
             state = .connected(hostName)
+            if let h = currentHost {
+                SharedStore.touch(name: h.name, manual: h.manual)
+                WidgetCenter.shared.reloadAllTimelines()
+            }
         case let .notice(text):
             notice = text
             wantsScreen = false

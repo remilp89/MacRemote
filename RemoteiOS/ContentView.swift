@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var pinHost: RemoteClient.Host?
     @State private var pin = ""
     @State private var manualText = ""
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("autoConnect") private var autoConnect = true
     @AppStorage("manualHosts") private var manualJoined = ""
 
     var body: some View {
@@ -16,7 +18,9 @@ struct ContentView: View {
                 hostList
             }
         }
-        .onAppear { client.startBrowsing() }
+        .onAppear { client.startBrowsing(); if autoConnect { client.autoConnectLast() } }
+        .onChange(of: scenePhase) { phase in if phase == .active && autoConnect { client.autoConnectLast() } }
+        .onOpenURL { url in if let e = SharedStore.entry(from: url) { client.openFromWidget(e) } }
         .alert("Code d'appairage", isPresented: Binding(get: { pinHost != nil }, set: { if !$0 { pinHost = nil } })) {
             TextField("XXXX-XXXX", text: $pin).textInputAutocapitalization(.characters).autocorrectionDisabled()
             Button("Annuler", role: .cancel) { pin = "" }
@@ -75,6 +79,7 @@ struct ContentView: View {
                         var l = manualList; l.remove(atOffsets: idx); manualJoined = l.joined(separator: "\n")
                     }
                 }
+                Section { Toggle("Reconnexion automatique au dernier Mac", isOn: $autoConnect) }
                 if case .failed(let msg) = client.state {
                     Section { Label(msg, systemImage: "exclamationmark.triangle").foregroundColor(.red) }
                 }
@@ -127,7 +132,7 @@ struct ControlView: View {
                     .font(.title2)
                 Button { keyboard.toggle() } label: { Image(systemName: keyboard ? "keyboard.chevron.compact.down" : "keyboard") }
                     .font(.title2)
-                Button("Quitter", role: .destructive) { client.disconnect() }
+                Button("Quitter", role: .destructive) { client.userDisconnect() }
             }
             trackpad
             HStack {
