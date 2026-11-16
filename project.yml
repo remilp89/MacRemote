@@ -1,0 +1,48 @@
+name: MacRemote
+options:
+  bundleIdPrefix: com.macremote
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "12.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    CODE_SIGN_STYLE: Automatic
+targets:
+  MacRemoteAgent:
+    type: application
+    platform: macOS
+    sources: [MacAgent, Shared]
+    entitlements:
+      path: MacAgent/MacAgent.entitlements
+      properties: {}
+    info:
+      path: MacAgent/Info.plist
+      properties:
+        CFBundleName: MacRemote Agent
+        CFBundleDisplayName: MacRemote Agent
+        LSUIElement: true
+        NSLocalNetworkUsageDescription: Permet à l'iPhone de piloter ce Mac.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macremote.agent
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "Apple Development"
+  MacRemote:
+    type: application
+    platform: iOS
+    sources: [RemoteiOS, Shared]
+    info:
+      path: RemoteiOS/Info.plist
+      properties:
+        CFBundleDisplayName: MacRemote
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        NSLocalNetworkUsageDescription: Se connecter au Mac à piloter sur votre réseau local.
+        NSBonjourServices: [_macremote._tcp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macremote.ios
+        TARGETED_DEVICE_FAMILY: "1"
